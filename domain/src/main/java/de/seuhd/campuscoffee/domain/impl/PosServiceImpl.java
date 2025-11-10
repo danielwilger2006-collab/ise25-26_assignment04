@@ -17,6 +17,7 @@ import org.jspecify.annotations.NonNull;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 
 /**
@@ -81,23 +82,185 @@ public class PosServiceImpl implements PosService {
 
     /**
      * Converts an OSM node to a POS domain object.
-     * Note: This is a stub implementation and should be replaced with real mapping logic.
+     * Extracts all relevant information from OSM tags and maps them to POS fields.
+     *
+     * @param osmNode the OSM node to convert
+     * @return a new POS object with data from the OSM node
+     * @throws OsmNodeMissingFieldsException if required fields are missing
      */
-    private @NonNull Pos convertOsmNodeToPos(@NonNull OsmNode osmNode) {
-        if (osmNode.nodeId().equals(5589879349L)) {
-            return Pos.builder()
-                    .name("Rada Coffee & Rösterei")
-                    .description("Caffé und Rösterei")
-                    .type(PosType.CAFE)
-                    .campus(CampusType.ALTSTADT)
-                    .street("Untere Straße")
-                    .houseNumber("21")
-                    .postalCode(69117)
-                    .city("Heidelberg")
-                    .build();
-        } else {
+    private @NonNull Pos convertOsmNodeToPos(@NonNull OsmNode osmNode) throws OsmNodeMissingFieldsException {
+        if (osmNode.tags() == null || osmNode.tags().isEmpty()) {
+            log.error("OSM node {} has no tags", osmNode.nodeId());
             throw new OsmNodeMissingFieldsException(osmNode.nodeId());
         }
+
+        Map<String, String> tags = osmNode.tags();
+
+        // Extract required fields
+        String name = tags.get("name");
+        String street = tags.get("addr:street");
+        String houseNumber = tags.get("addr:housenumber");
+        String city = tags.get("addr:city");
+        String postalCodeStr = tags.get("addr:postcode");
+
+        // Validate required fields
+        if (name == null || name.isBlank()) {
+            log.error("OSM node {} is missing required field: name", osmNode.nodeId());
+            throw new OsmNodeMissingFieldsException(osmNode.nodeId());
+        }
+        if (street == null || street.isBlank()) {
+            log.error("OSM node {} is missing required field: addr:street", osmNode.nodeId());
+            throw new OsmNodeMissingFieldsException(osmNode.nodeId());
+        }
+        if (houseNumber == null || houseNumber.isBlank()) {
+            log.error("OSM node {} is missing required field: addr:housenumber", osmNode.nodeId());
+            throw new OsmNodeMissingFieldsException(osmNode.nodeId());
+        }
+        if (city == null || city.isBlank()) {
+            log.error("OSM node {} is missing required field: addr:city", osmNode.nodeId());
+            throw new OsmNodeMissingFieldsException(osmNode.nodeId());
+        }
+        if (postalCodeStr == null || postalCodeStr.isBlank()) {
+            log.error("OSM node {} is missing required field: addr:postcode", osmNode.nodeId());
+            throw new OsmNodeMissingFieldsException(osmNode.nodeId());
+        }
+
+        // Parse postal code
+        Integer postalCode;
+        try {
+            postalCode = Integer.parseInt(postalCodeStr);
+        } catch (NumberFormatException e) {
+            log.error("OSM node {} has invalid postal code: {}", osmNode.nodeId(), postalCodeStr);
+            throw new OsmNodeMissingFieldsException(osmNode.nodeId());
+        }
+
+        // Determine POS type from OSM amenity tag
+        PosType posType = determinePosType(tags);
+
+        // Determine campus type (default to ALTSTADT for Heidelberg, could be enhanced with coordinate-based logic)
+        CampusType campusType = determineCampusType(city, osmNode.latitude(), osmNode.longitude());
+
+        // Generate description from OSM tags
+        String description = generateDescription(tags);
+
+        log.debug("Converted OSM node {} to POS: name={}, street={} {}, city={}", 
+                osmNode.nodeId(), name, street, houseNumber, city);
+
+        return Pos.builder()
+                .name(name)
+                .description(description)
+                .type(posType)
+                .campus(campusType)
+                .street(street)
+                .houseNumber(houseNumber)
+                .postalCode(postalCode)
+                .city(city)
+                .build();
+    }
+
+    /**
+     * Determines the POS type based on OSM tags.
+     * Maps OSM amenity values to PosType enum values.
+     *
+     * @param tags the OSM tags
+     * @return the determined POS type, defaults to CAFE if not specified
+     */
+    private PosType determinePosType(Map<String, String> tags) {
+        String amenity = tags.get("amenity");
+        String cuisine = tags.get("cuisine");
+        String shop = tags.get("shop");
+
+        if (amenity != null) {
+            return switch (amenity.toLowerCase()) {
+                case "cafe" -> PosType.CAFE;
+                case "restaurant" -> PosType.RESTAURANT;
+                case "bar", "pub" -> PosType.BAR;
+                case "fast_food" -> PosType.FAST_FOOD;
+                default -> PosType.CAFE; // Default to cafe
+            };
+        }
+
+        if (shop != null && shop.equalsIgnoreCase("bakery")) {
+            return PosType.BAKERY;
+        }
+
+        if (cuisine != null && cuisine.toLowerCase().contains("coffee")) {
+            return PosType.CAFE;
+        }
+
+        // Default to CAFE
+        return PosType.CAFE;
+    }
+
+    /**
+     * Determines the campus type based on city and coordinates.
+     * This is a simplified implementation that defaults to ALTSTADT for Heidelberg.
+     * Could be enhanced with coordinate-based logic to determine the specific campus.
+     *
+     * @param city      the city name
+     * @param latitude  the latitude (nullable)
+     * @param longitude the longitude (nullable)
+     * @return the determined campus type
+     */
+    private CampusType determineCampusType(String city, Double latitude, Double longitude) {
+        // For Heidelberg, default to ALTSTADT
+        // In a real implementation, you could use coordinates to determine the specific campus
+        if (city != null && city.equalsIgnoreCase("Heidelberg")) {
+            return CampusType.ALTSTADT;
+        }
+        // For other cities, still default to ALTSTADT
+        return CampusType.ALTSTADT;
+    }
+
+    /**
+     * Generates a description from OSM tags.
+     * Combines relevant tags to create a meaningful description.
+     *
+     * @param tags the OSM tags
+     * @return a generated description
+     */
+    private String generateDescription(Map<String, String> tags) {
+        StringBuilder description = new StringBuilder();
+
+        String amenity = tags.get("amenity");
+        String cuisine = tags.get("cuisine");
+        String shop = tags.get("shop");
+        String osmDescription = tags.get("description");
+
+        // Use explicit OSM description if available
+        if (osmDescription != null && !osmDescription.isBlank()) {
+            return osmDescription;
+        }
+
+        // Build description from available tags
+        if (shop != null) {
+            description.append(capitalize(shop));
+        } else if (amenity != null) {
+            description.append(capitalize(amenity));
+        }
+
+        if (cuisine != null && !cuisine.isBlank()) {
+            if (description.length() > 0) {
+                description.append(" - ");
+            }
+            description.append(cuisine);
+        }
+
+        // Return built description or a default
+        return description.length() > 0 ? description.toString() : "Point of Sale";
+    }
+
+    /**
+     * Capitalizes the first letter of a string.
+     *
+     * @param str the string to capitalize
+     * @return the capitalized string
+     */
+    private String capitalize(String str) {
+        if (str == null || str.isEmpty()) {
+            return str;
+        }
+        return str.substring(0, 1).toUpperCase() + str.substring(1);
     }
 
     /**
